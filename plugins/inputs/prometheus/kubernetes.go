@@ -3,6 +3,7 @@ package prometheus
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"time"
 
@@ -52,9 +53,9 @@ func start(p *Prometheus) error {
 }
 
 func registerPod(pod *v1.Pod, p *Prometheus) {
-	url := scrapeURL(pod)
-	if url != nil {
-		log.Printf("Will scrape metrics from %v\n", *url)
+	targetURL := scrapeURL(pod)
+	if targetURL != nil {
+		log.Printf("D! [inputs.prometheus] will scrape metrics from %v\n", *targetURL)
 		p.lock.Lock()
 		// add annotation as metrics tags
 		tags := pod.GetAnnotations()
@@ -64,7 +65,13 @@ func registerPod(pod *v1.Pod, p *Prometheus) {
 		for k, v := range pod.GetLabels() {
 			tags[k] = v
 		}
-		p.KubernetesPods = append(p.KubernetesPods, Target{url: *url, tags: tags})
+		URL, err := url.Parse(*targetURL)
+		if err != nil {
+			log.Printf("E! [inputs.prometheus] could not parse URL %q: %v", targetURL, err)
+			return
+		}
+		podURL := p.AddressToURL(URL, URL.Hostname())
+		p.kubernetesPods = append(p.kubernetesPods, URLAndAddress{URL: podURL, Address: URL.Hostname(), OriginalURL: URL, Tags: tags})
 		p.lock.Unlock()
 	}
 }
@@ -101,16 +108,16 @@ func unregisterPod(pod *v1.Pod, p *Prometheus) {
 	if url != nil {
 		p.lock.Lock()
 		defer p.lock.Unlock()
-		log.Printf("Registred a delete request for %v in namespace '%v'\n", pod.Name, pod.Namespace)
-		var result []Target
-		for _, v := range p.KubernetesPods {
-			if v.url != *url {
+		log.Printf("D! [inputs.prometheus] registred a delete request for %v in namespace %v\n", pod.Name, pod.Namespace)
+		var result []URLAndAddress
+		for _, v := range p.kubernetesPods {
+			if v.URL.String() != *url {
 				result = append(result, v)
 			} else {
-				log.Printf("Will stop scraping for %v\n", *url)
+				log.Printf("D! [inputs.prometheus] will stop scraping for %v\n", *url)
 			}
 
 		}
-		p.KubernetesPods = result
+		p.kubernetesPods = result
 	}
 }

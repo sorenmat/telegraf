@@ -18,21 +18,12 @@ import (
 
 const acceptHeader = `application/vnd.google.protobuf;proto=io.prometheus.client.MetricFamily;encoding=delimited;q=0.7,text/plain;version=0.0.4;q=0.3`
 
-type Target struct {
-	url  string
-	tags map[string]string
-}
 type Prometheus struct {
 	// An array of urls to scrape metrics from.
 	URLs []string `toml:"urls"`
 
 	// An array of Kubernetes services to scrape metrics from.
 	KubernetesServices []string
-
-	// Should we scrape Kubernetes services for prometheus annotations
-	KubernetesScraping bool `toml:"kubernetes_scraping"`
-	lock               *sync.Mutex
-	KubernetesPods     []Target
 
 	// Bearer Token authorization file path
 	BearerToken string `toml:"bearer_token"`
@@ -49,6 +40,11 @@ type Prometheus struct {
 	InsecureSkipVerify bool
 
 	client *http.Client
+
+	// Should we scrape Kubernetes services for prometheus annotations
+	KubernetesScraping bool `toml:"monitor_kubernetes_pods"`
+	lock               *sync.Mutex
+	kubernetesPods     []URLAndAddress
 }
 
 var sampleConfig = `
@@ -62,7 +58,7 @@ var sampleConfig = `
   # prometheus.io/scrape: Enable scraping for this pod
   # prometheus.io/path: If the metrics path is not /metrics, define it with this annotation.
   # prometheus.io/port: If port is not 9102 use this annotation
-  # kubernetes_scraping = true
+  # monitor_kubernetes_pods = true
 
   ## Use bearer token for authorization
   # bearer_token = /path/to/bearer/token
@@ -128,15 +124,7 @@ func (p *Prometheus) GetAllURLs() ([]URLAndAddress, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
 	// loop through all pods scraped via the prometheus annotation on the pods
-	for _, pod := range p.KubernetesPods {
-		URL, err := url.Parse(pod.url)
-		if err != nil {
-			log.Printf("prometheus: Could not parse url %s, skipping it. Error: %s", pod.url, err)
-			continue
-		}
-		podURL := p.AddressToURL(URL, URL.Hostname())
-		allURLs = append(allURLs, URLAndAddress{URL: podURL, Address: URL.Hostname(), OriginalURL: URL, Tags: pod.tags})
-	}
+	allURLs = append(allURLs, p.kubernetesPods...)
 
 	for _, service := range p.KubernetesServices {
 		URL, err := url.Parse(service)
@@ -280,6 +268,7 @@ func (p *Prometheus) Stop() {}
 
 func init() {
 	inputs.Add("prometheus", func() telegraf.Input {
-		return &Prometheus{ResponseTimeout: internal.Duration{Duration: time.Second * 3}, lock: &sync.Mutex{}}
+		return &Prometheus{ResponseTimeout: internal.Duration{Duration: time.Second * 3},
+			lock: &sync.Mutex{}}
 	})
 }
